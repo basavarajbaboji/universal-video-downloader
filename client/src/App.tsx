@@ -54,6 +54,14 @@ function App() {
   const [selectedQuality, setSelectedQuality] = useState('');
   const [downloading, setDownloading] = useState(false);
   const [showCookiePopup, setShowCookiePopup] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadSize, setDownloadSize] = useState(0);
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
+  const [downloadedChunks, setDownloadedChunks] = useState<Uint8Array[]>([]);
+  const [downloadedBytes, setDownloadedBytes] = useState(0);
+  const [currentFilename, setCurrentFilename] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     // Show cookie popup after 2 seconds
@@ -92,26 +100,153 @@ function App() {
     }
   };
 
+  const startDownload = async (resumeFromByte = 0) => {
+    if (!contentInfo) return;
+
+    try {
+      const controller = new AbortController();
+      setAbortController(controller);
+
+      const downloadUrl = contentInfo.type === 'video' ? contentInfo.webpage_url : contentInfo.url;
+      const streamUrl = `/api/stream-download?${new URLSearchParams({
+        url: downloadUrl,
+        format: selectedFormat,
+        quality: selectedQuality,
+        resumeFrom: resumeFromByte.toString()
+      })}`;
+
+      const headers: HeadersInit = {};
+      if (resumeFromByte > 0) {
+        headers['Range'] = `bytes=${resumeFromByte}-`;
+      }
+
+      const response = await fetch(streamUrl, {
+        signal: controller.signal,
+        headers
+      });
+
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.statusText}`);
+      }
+
+      // Get filename and size info
+      const contentDisposition = response.headers.get('Content-Disposition');
+      const filenameMatch = contentDisposition?.match(/filename="([^"]+)"/);
+      const filename = filenameMatch?.[1] || `download.${selectedFormat}`;
+      setCurrentFilename(filename);
+
+      const contentLength = response.headers.get('Content-Length');
+      const totalSize = contentLength ? parseInt(contentLength) + resumeFromByte : 0;
+
+      if (totalSize > 0 && downloadSize === 0) {
+        setDownloadSize(totalSize);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Failed to get response stream');
+      }
+
+      // Resume download loop
+      while (!isPaused) {
+        const { done, value } = await reader.read();
+        
+        if (done) break;
+        
+        // Add chunk to existing chunks
+        setDownloadedChunks(prev => [...prev, value]);
+        const newDownloadedBytes = downloadedBytes + value.length;
+        setDownloadedBytes(newDownloadedBytes);
+        
+        // Update progress
+        if (downloadSize > 0) {
+          const progress = (newDownloadedBytes / downloadSize) * 100;
+          setDownloadProgress(Math.round(progress));
+        }
+
+        // Check if paused during download
+        if (isPaused) {
+          reader.cancel();
+          break;
+        }
+      }
+
+      // If completed (not paused), trigger download
+      if (!isPaused && downloadedChunks.length > 0) {
+        const blob = new Blob(downloadedChunks);
+        const url = URL.createObjectURL(blob);
+        
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        URL.revokeObjectURL(url);
+        
+        // Reset state
+        resetDownloadState();
+        alert(`Download completed: ${filename}`);
+      }
+
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        console.log('Download stream aborted');
+      } else if (err.message.includes('network') || err.message.includes('fetch')) {
+        // Network error - attempt retry
+        if (retryCount < 3) {
+          console.log(`Network error, retrying... (${retryCount + 1}/3)`);
+          setRetryCount(prev => prev + 1);
+          setTimeout(() => startDownload(downloadedBytes), 2000);
+          return;
+        } else {
+          setError('Network error: Maximum retries exceeded. You can resume the download.');
+        }
+      } else {
+        setError(err.message || 'Failed to download');
+      }
+    }
+  };
+
   const handleDownload = async () => {
     if (!contentInfo) return;
 
+    // Reset state for new download
+    resetDownloadState();
     setDownloading(true);
     setError('');
+    
+    await startDownload(0);
+  };
 
-    try {
-      const response = await axios.post<{success: boolean; message?: string}>('/api/download', {
-        url: contentInfo.type === 'video' ? contentInfo.webpage_url : contentInfo.url,
-        format: selectedFormat,
-        quality: selectedQuality
-      });
-
-      if (response.data.success) {
-        alert('Download started successfully!');
+  const handlePauseResume = () => {
+    if (isPaused) {
+      // Resume download
+      setIsPaused(false);
+      startDownload(downloadedBytes);
+    } else {
+      // Pause download
+      setIsPaused(true);
+      if (abortController) {
+        abortController.abort();
       }
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to start download');
-    } finally {
-      setDownloading(false);
+    }
+  };
+
+  const resetDownloadState = () => {
+    setDownloadProgress(0);
+    setDownloadSize(0);
+    setDownloadedChunks([]);
+    setDownloadedBytes(0);
+    setCurrentFilename('');
+    setRetryCount(0);
+    setIsPaused(false);
+  };
+
+  const handleCancelDownload = () => {
+    if (abortController) {
+      abortController.abort();
     }
   };
 
@@ -306,14 +441,59 @@ function App() {
                 </div>
               )}
 
-              <button
-                onClick={handleDownload}
-                disabled={downloading}
-                className="download-btn"
-              >
-                <Download className="btn-icon" />
-                {downloading ? 'Downloading...' : 'Download'}
-              </button>
+              {downloading ? (
+                <div className="download-progress">
+                  <div className="progress-info">
+                    <span className="progress-text">
+                      {isPaused ? 'Paused' : 'Downloading...'} {downloadProgress > 0 ? `${downloadProgress}%` : ''}
+                      {retryCount > 0 && ` (Retry ${retryCount}/3)`}
+                    </span>
+                    {downloadSize > 0 && (
+                      <span className="download-size">
+                        {formatFileSize(downloadedBytes)} / {formatFileSize(downloadSize)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="progress-bar">
+                    <div 
+                      className="progress-fill" 
+                      style={{ width: `${downloadProgress}%` }}
+                    ></div>
+                  </div>
+                  <div className="download-controls">
+                    <button
+                      onClick={handlePauseResume}
+                      className={`control-btn ${isPaused ? 'resume-btn' : 'pause-btn'}`}
+                    >
+                      {isPaused ? '▶️ Resume' : '⏸️ Pause'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        handleCancelDownload();
+                        setDownloading(false);
+                        resetDownloadState();
+                      }}
+                      className="cancel-btn"
+                    >
+                      ❌ Cancel
+                    </button>
+                  </div>
+                  {currentFilename && (
+                    <div className="download-filename">
+                      📁 {currentFilename}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <button
+                  onClick={handleDownload}
+                  disabled={downloading}
+                  className="download-btn"
+                >
+                  <Download className="btn-icon" />
+                  Stream Download
+                </button>
+              )}
             </div>
           )}
         </div>
