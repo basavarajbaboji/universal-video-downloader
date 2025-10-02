@@ -22,6 +22,7 @@ downloads/
 # Cookies and sensitive files
 cookies.txt
 *.cookies
+temp_cookies_*.txt
 
 # Logs
 logs

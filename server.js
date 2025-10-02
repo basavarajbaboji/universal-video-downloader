@@ -3,10 +3,10 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
-const { spawn } = require('child_process');
 const fs = require('fs').promises;
 const axios = require('axios');
 const { existsSync } = require('fs');
+const ytdlp = require('yt-dlp-exec');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -69,7 +69,7 @@ if (require('fs').existsSync(buildPath)) {
 // URL analysis endpoint
 app.post('/api/analyze', apiLimiter, async (req, res) => {
   try {
-    const { url } = req.body;
+    const { url, cookies } = req.body;
     
     if (!url) {
       return res.status(400).json({ error: 'URL is required' });
@@ -88,7 +88,7 @@ app.post('/api/analyze', apiLimiter, async (req, res) => {
     }
 
     // Use yt-dlp to analyze video URL
-    const videoInfo = await analyzeVideoUrl(url);
+    const videoInfo = await analyzeVideoUrl(url, cookies);
     
     res.json({
       type: 'video',
@@ -107,13 +107,13 @@ app.post('/api/analyze', apiLimiter, async (req, res) => {
 // Download endpoint
 app.post('/api/download', apiLimiter, async (req, res) => {
   try {
-    const { url, format, quality } = req.body;
+    const { url, format, quality, cookies } = req.body;
     
     if (!url) {
       return res.status(400).json({ error: 'URL is required' });
     }
 
-    const downloadResult = await downloadContent(url, format, quality);
+    const downloadResult = await downloadContent(url, format, quality, cookies);
     
     res.json(downloadResult);
 
@@ -127,6 +127,27 @@ app.post('/api/download', apiLimiter, async (req, res) => {
 });
 
 // Helper functions
+function validateCookies(cookiesString) {
+  if (!cookiesString || typeof cookiesString !== 'string') {
+    return false;
+  }
+  
+  // Check if it looks like Netscape cookie format
+  const lines = cookiesString.trim().split('\n');
+  
+  // Should have header comment or cookie entries
+  if (lines.length === 0) return false;
+  
+  // Look for valid cookie entries (tab-separated values)
+  const cookieLines = lines.filter(line => 
+    !line.startsWith('#') && 
+    line.trim().length > 0 &&
+    line.split('\t').length >= 6
+  );
+  
+  return cookieLines.length > 0;
+}
+
 function getFileExtension(url) {
   const extensions = ['.mp4', '.mp3', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4a', '.wav', '.flac'];
   const urlPath = new URL(url).pathname.toLowerCase();
@@ -152,82 +173,95 @@ async function getFileSize(url) {
   }
 }
 
-async function analyzeVideoUrl(url) {
-  return new Promise((resolve, reject) => {
-    // Enhanced yt-dlp arguments to avoid bot detection
-    const args = [
-      '--dump-json',
-      '--no-download',
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      '--referer', 'https://www.google.com/',
-      '--add-header', 'Accept-Language:en-US,en;q=0.9',
-      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      '--add-header', 'Accept-Encoding:gzip, deflate',
-      '--add-header', 'DNT:1',
-      '--add-header', 'Connection:keep-alive',
-      '--add-header', 'Upgrade-Insecure-Requests:1',
-      '--sleep-interval', '2',
-      '--max-sleep-interval', '8',
-      '--extractor-retries', '5',
-      '--fragment-retries', '5',
-      '--retry-sleep', 'exp=1:10'
-    ];
+async function analyzeVideoUrl(url, userCookies) {
+  try {
+    const options = {
+      dumpSingleJson: true,
+      noWarnings: true,
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      referer: 'https://www.google.com/',
+      addHeader: [
+        'Accept-Language:en-US,en;q=0.9',
+        'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Encoding:gzip, deflate',
+        'DNT:1',
+        'Connection:keep-alive',
+        'Upgrade-Insecure-Requests:1'
+      ],
+      sleepInterval: 2,
+      maxSleepInterval: 8,
+      extractorRetries: 5,
+      fragmentRetries: 5,
+      retrySleep: 'exp=1:10'
+    };
 
-    // Add cookies if available (critical for avoiding 429 errors)
-    if (USE_COOKIES) {
-      args.push('--cookies', COOKIES_PATH);
-    }
-
-    // Add URL as the last argument
-    args.push(url);
-
-    const ytdlp = spawn('yt-dlp', args);
-
-    let output = '';
-    let error = '';
-
-    ytdlp.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    ytdlp.stderr.on('data', (data) => {
-      error += data.toString();
-    });
-
-    ytdlp.on('close', (code) => {
-      if (code === 0) {
-        try {
-          const info = JSON.parse(output);
-          resolve({
-            title: info.title,
-            description: info.description,
-            duration: info.duration,
-            uploader: info.uploader,
-            thumbnail: info.thumbnail,
-            formats: extractFormats(info.formats || []),
-            webpage_url: info.webpage_url
-          });
-        } catch (parseError) {
-          reject(new Error('Failed to parse video information'));
-        }
-      } else {
-        // Enhanced error handling for YouTube bot detection
-        if (error.includes('Sign in to confirm you\'re not a bot') || error.includes('429')) {
-          reject(new Error('YouTube has temporarily blocked this request. This is common with shared hosting. Try again in a few minutes or use a different video URL.'));
-        } else if (error.includes('Video unavailable') || error.includes('Private video')) {
-          reject(new Error('This video is private, unavailable, or restricted in your region.'));
-        } else {
-          reject(new Error(error || 'Failed to analyze video URL'));
-        }
+    // Priority: user-provided cookies > file cookies > no cookies
+    if (userCookies && validateCookies(userCookies)) {
+      // Write temporary cookie file for this request
+      const tempCookiePath = path.join(__dirname, `temp_cookies_${Date.now()}.txt`);
+      await fs.writeFile(tempCookiePath, userCookies);
+      options.cookies = tempCookiePath;
+      
+      try {
+        const info = await ytdlp(url, options);
+        
+        // Clean up temp file
+        await fs.unlink(tempCookiePath).catch(() => {});
+        
+        return {
+          title: info.title,
+          description: info.description,
+          duration: info.duration,
+          uploader: info.uploader,
+          thumbnail: info.thumbnail,
+          formats: extractFormats(info.formats || []),
+          webpage_url: info.webpage_url
+        };
+      } catch (error) {
+        // Clean up temp file on error
+        await fs.unlink(tempCookiePath).catch(() => {});
+        throw error;
       }
-    });
-
-    // Set timeout to prevent hanging
-    setTimeout(() => {
-      ytdlp.kill();
-      reject(new Error('Request timeout. YouTube may be blocking requests. Try again later.'));
-    }, 30000);
-  });
+    } else if (USE_COOKIES) {
+      // Fallback to file cookies
+      options.cookies = COOKIES_PATH;
+      const info = await ytdlp(url, options);
+      
+      return {
+        title: info.title,
+        description: info.description,
+        duration: info.duration,
+        uploader: info.uploader,
+        thumbnail: info.thumbnail,
+        formats: extractFormats(info.formats || []),
+        webpage_url: info.webpage_url
+      };
+    } else {
+      // No cookies available
+      const info = await ytdlp(url, options);
+      
+      return {
+        title: info.title,
+        description: info.description,
+        duration: info.duration,
+        uploader: info.uploader,
+        thumbnail: info.thumbnail,
+        formats: extractFormats(info.formats || []),
+        webpage_url: info.webpage_url
+      };
+    }
+  } catch (error) {
+    // Enhanced error handling for YouTube bot detection
+    const errorMessage = error.message || error.toString();
+    
+    if (errorMessage.includes('Sign in to confirm you\'re not a bot') || errorMessage.includes('429')) {
+      throw new Error('YouTube has temporarily blocked this request. Please provide valid YouTube cookies or try again later.');
+    } else if (errorMessage.includes('Video unavailable') || errorMessage.includes('Private video')) {
+      throw new Error('This video is private, unavailable, or restricted in your region.');
+    } else {
+      throw new Error(errorMessage || 'Failed to analyze video URL');
+    }
+  }
 }
 
 function extractFormats(formats) {
@@ -264,7 +298,7 @@ function extractFormats(formats) {
   };
 }
 
-async function downloadContent(url, format, quality) {
+async function downloadContent(url, format, quality, userCookies) {
   const outputDir = path.join(__dirname, 'downloads');
   
   // Ensure downloads directory exists
@@ -274,82 +308,85 @@ async function downloadContent(url, format, quality) {
     console.error('Failed to create downloads directory:', error);
   }
 
-  return new Promise((resolve, reject) => {
-    const args = [
-      '--output', `${outputDir}/%(title)s.%(ext)s`,
-      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      '--referer', 'https://www.google.com/',
-      '--add-header', 'Accept-Language:en-US,en;q=0.9',
-      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      '--add-header', 'Accept-Encoding:gzip, deflate',
-      '--add-header', 'DNT:1',
-      '--add-header', 'Connection:keep-alive',
-      '--add-header', 'Upgrade-Insecure-Requests:1',
-      '--sleep-interval', '3',
-      '--max-sleep-interval', '10',
-      '--extractor-retries', '5',
-      '--fragment-retries', '5',
-      '--retry-sleep', 'exp=1:20',
-      '--throttled-rate', '100K'
-    ];
+  try {
+    const options = {
+      output: `${outputDir}/%(title)s.%(ext)s`,
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      referer: 'https://www.google.com/',
+      addHeader: [
+        'Accept-Language:en-US,en;q=0.9',
+        'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Encoding:gzip, deflate',
+        'DNT:1',
+        'Connection:keep-alive',
+        'Upgrade-Insecure-Requests:1'
+      ],
+      sleepInterval: 3,
+      maxSleepInterval: 10,
+      extractorRetries: 5,
+      fragmentRetries: 5,
+      retrySleep: 'exp=1:20',
+      throttledRate: '100K'
+    };
 
-    // Add cookies if available (critical for avoiding 429 errors)
-    if (USE_COOKIES) {
-      args.push('--cookies', COOKIES_PATH);
+    // Priority: user-provided cookies > file cookies > no cookies
+    let tempCookiePath = null;
+    
+    if (userCookies && validateCookies(userCookies)) {
+      // Write temporary cookie file for this request
+      tempCookiePath = path.join(__dirname, `temp_cookies_${Date.now()}.txt`);
+      await fs.writeFile(tempCookiePath, userCookies);
+      options.cookies = tempCookiePath;
+    } else if (USE_COOKIES) {
+      // Fallback to file cookies
+      options.cookies = COOKIES_PATH;
     }
 
+    // Set format-specific options
     if (format === 'mp3') {
-      args.push('--extract-audio', '--audio-format', 'mp3');
+      options.extractAudio = true;
+      options.audioFormat = 'mp3';
       if (quality) {
-        args.push('--audio-quality', quality);
+        options.audioQuality = quality;
       }
     } else if (format === 'mp4') {
-      args.push('--format', `best[height<=${quality}][ext=mp4]`);
+      options.format = `best[height<=${quality}][ext=mp4]`;
     }
 
-    // Add URL as the last argument
-    args.push(url);
-
-    const ytdlp = spawn('yt-dlp', args);
-
-    let output = '';
-    let error = '';
-
-    ytdlp.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    ytdlp.stderr.on('data', (data) => {
-      error += data.toString();
-    });
-
-    ytdlp.on('close', (code) => {
-      if (code === 0) {
-        resolve({
-          success: true,
-          message: 'Download completed successfully',
-          output: output
-        });
-      } else {
-        // Enhanced error handling for downloads
-        if (error.includes('Sign in to confirm you\'re not a bot') || error.includes('429')) {
-          reject(new Error('YouTube has temporarily blocked download requests. This is common with shared hosting. Please try again in a few minutes.'));
-        } else if (error.includes('Video unavailable') || error.includes('Private video')) {
-          reject(new Error('This video is private, unavailable, or restricted in your region.'));
-        } else if (error.includes('HTTP Error 403')) {
-          reject(new Error('Access denied. The video may be geo-blocked or require authentication.'));
-        } else {
-          reject(new Error(error || 'Download failed'));
-        }
+    try {
+      const result = await ytdlp(url, options);
+      
+      // Clean up temp file if created
+      if (tempCookiePath) {
+        await fs.unlink(tempCookiePath).catch(() => {});
       }
-    });
-
-    // Set timeout for downloads (5 minutes)
-    setTimeout(() => {
-      ytdlp.kill();
-      reject(new Error('Download timeout. Large files or slow connections may cause this. Try again later.'));
-    }, 300000);
-  });
+      
+      return {
+        success: true,
+        message: 'Download completed successfully',
+        output: result
+      };
+    } catch (error) {
+      // Clean up temp file on error
+      if (tempCookiePath) {
+        await fs.unlink(tempCookiePath).catch(() => {});
+      }
+      throw error;
+    }
+  } catch (error) {
+    // Enhanced error handling for downloads
+    const errorMessage = error.message || error.toString();
+    
+    if (errorMessage.includes('Sign in to confirm you\'re not a bot') || errorMessage.includes('429')) {
+      throw new Error('YouTube has temporarily blocked download requests. Please provide valid YouTube cookies or try again later.');
+    } else if (errorMessage.includes('Video unavailable') || errorMessage.includes('Private video')) {
+      throw new Error('This video is private, unavailable, or restricted in your region.');
+    } else if (errorMessage.includes('HTTP Error 403')) {
+      throw new Error('Access denied. The video may be geo-blocked or require authentication.');
+    } else {
+      throw new Error(errorMessage || 'Download failed');
+    }
+  }
 }
 
 // Serve React app for all other routes (only in production)
