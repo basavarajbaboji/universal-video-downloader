@@ -98,14 +98,35 @@ Consider upgrading to paid plan for:
 - Dockerfile includes Python and pip installation
 - yt-dlp is installed during container build
 
+### YouTube Bot Detection (HTTP 429)
+**Common on shared hosting like Render's free tier**
+
+**Solutions Implemented:**
+- Enhanced user-agent and HTTP headers
+- Request throttling and retry logic
+- Rate limiting (10 requests per 5 minutes)
+- Better error messages for users
+
+**User Guidance:**
+- Wait 5-10 minutes between failed attempts
+- Try different YouTube videos
+- Use other platforms (Vimeo, etc.) when possible
+
 ### CORS Issues
 - Server is configured for production CORS
 - Frontend and backend are served from same domain
 
+### Rate Limiting Errors
+- API endpoints limited to 10 requests per 5 minutes per IP
+- Prevents overwhelming YouTube's servers
+- Users see helpful error messages with retry guidance
+
 ### Slow Performance
 - Free tier has limited resources
-- Consider upgrading to paid plan
-- Optimize bundle size if needed
+- Consider upgrading to paid plan for:
+  - Dedicated IP (reduces bot detection)
+  - Better performance
+  - No cold starts
 
 ## Custom Domain (Paid Plans)
 1. Go to service settings

@@ -195,7 +195,24 @@ function App() {
 
           {error && (
             <div className="error-message">
-              {error}
+              <div className="error-title">⚠️ Request Failed</div>
+              <div className="error-text">{error}</div>
+              {error.includes('YouTube has temporarily blocked') && (
+                <div className="error-help">
+                  <p><strong>Why this happens:</strong> YouTube blocks requests from shared hosting to prevent abuse.</p>
+                  <p><strong>Solutions:</strong></p>
+                  <ul>
+                    <li>Wait 5-10 minutes and try again</li>
+                    <li>Try a different YouTube video</li>
+                    <li>Use videos from other platforms (Vimeo, etc.)</li>
+                  </ul>
+                </div>
+              )}
+              {error.includes('Too many requests') && (
+                <div className="error-help">
+                  <p><strong>Rate limit reached.</strong> Please wait before making more requests.</p>
+                </div>
+              )}
             </div>
           )}
 

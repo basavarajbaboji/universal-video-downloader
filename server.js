@@ -18,11 +18,24 @@ app.use(helmet({
 }));
 
 // Rate limiting
-const limiter = rateLimit({
+const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100 // limit each IP to 100 requests per windowMs
 });
-app.use(limiter);
+
+// Stricter rate limiting for API endpoints to avoid YouTube bot detection
+const apiLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 10, // limit each IP to 10 API requests per 5 minutes
+  message: {
+    error: 'Too many requests. Please wait 5 minutes before trying again.',
+    retryAfter: '5 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+app.use(generalLimiter);
 
 // CORS and JSON parsing
 const corsOptions = {
@@ -42,7 +55,7 @@ if (require('fs').existsSync(buildPath)) {
 }
 
 // URL analysis endpoint
-app.post('/api/analyze', async (req, res) => {
+app.post('/api/analyze', apiLimiter, async (req, res) => {
   try {
     const { url } = req.body;
     
@@ -80,7 +93,7 @@ app.post('/api/analyze', async (req, res) => {
 });
 
 // Download endpoint
-app.post('/api/download', async (req, res) => {
+app.post('/api/download', apiLimiter, async (req, res) => {
   try {
     const { url, format, quality } = req.body;
     
@@ -129,11 +142,27 @@ async function getFileSize(url) {
 
 async function analyzeVideoUrl(url) {
   return new Promise((resolve, reject) => {
-    const ytdlp = spawn('yt-dlp', [
+    // Enhanced yt-dlp arguments to avoid bot detection
+    const args = [
       '--dump-json',
       '--no-download',
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      '--referer', 'https://www.google.com/',
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      '--add-header', 'Accept-Encoding:gzip, deflate',
+      '--add-header', 'DNT:1',
+      '--add-header', 'Connection:keep-alive',
+      '--add-header', 'Upgrade-Insecure-Requests:1',
+      '--sleep-interval', '1',
+      '--max-sleep-interval', '5',
+      '--extractor-retries', '3',
+      '--fragment-retries', '3',
+      '--retry-sleep', 'linear=1::2',
       url
-    ]);
+    ];
+
+    const ytdlp = spawn('yt-dlp', args);
 
     let output = '';
     let error = '';
@@ -163,9 +192,22 @@ async function analyzeVideoUrl(url) {
           reject(new Error('Failed to parse video information'));
         }
       } else {
-        reject(new Error(error || 'Failed to analyze video URL'));
+        // Enhanced error handling for YouTube bot detection
+        if (error.includes('Sign in to confirm you\'re not a bot') || error.includes('429')) {
+          reject(new Error('YouTube has temporarily blocked this request. This is common with shared hosting. Try again in a few minutes or use a different video URL.'));
+        } else if (error.includes('Video unavailable') || error.includes('Private video')) {
+          reject(new Error('This video is private, unavailable, or restricted in your region.'));
+        } else {
+          reject(new Error(error || 'Failed to analyze video URL'));
+        }
       }
     });
+
+    // Set timeout to prevent hanging
+    setTimeout(() => {
+      ytdlp.kill();
+      reject(new Error('Request timeout. YouTube may be blocking requests. Try again later.'));
+    }, 30000);
   });
 }
 
@@ -216,6 +258,20 @@ async function downloadContent(url, format, quality) {
   return new Promise((resolve, reject) => {
     const args = [
       '--output', `${outputDir}/%(title)s.%(ext)s`,
+      '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      '--referer', 'https://www.google.com/',
+      '--add-header', 'Accept-Language:en-US,en;q=0.9',
+      '--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      '--add-header', 'Accept-Encoding:gzip, deflate',
+      '--add-header', 'DNT:1',
+      '--add-header', 'Connection:keep-alive',
+      '--add-header', 'Upgrade-Insecure-Requests:1',
+      '--sleep-interval', '2',
+      '--max-sleep-interval', '8',
+      '--extractor-retries', '5',
+      '--fragment-retries', '5',
+      '--retry-sleep', 'exp=1:20',
+      '--throttled-rate', '100K',
       url
     ];
 
@@ -249,9 +305,24 @@ async function downloadContent(url, format, quality) {
           output: output
         });
       } else {
-        reject(new Error(error || 'Download failed'));
+        // Enhanced error handling for downloads
+        if (error.includes('Sign in to confirm you\'re not a bot') || error.includes('429')) {
+          reject(new Error('YouTube has temporarily blocked download requests. This is common with shared hosting. Please try again in a few minutes.'));
+        } else if (error.includes('Video unavailable') || error.includes('Private video')) {
+          reject(new Error('This video is private, unavailable, or restricted in your region.'));
+        } else if (error.includes('HTTP Error 403')) {
+          reject(new Error('Access denied. The video may be geo-blocked or require authentication.'));
+        } else {
+          reject(new Error(error || 'Download failed'));
+        }
       }
     });
+
+    // Set timeout for downloads (5 minutes)
+    setTimeout(() => {
+      ytdlp.kill();
+      reject(new Error('Download timeout. Large files or slow connections may cause this. Try again later.'));
+    }, 300000);
   });
 }
 

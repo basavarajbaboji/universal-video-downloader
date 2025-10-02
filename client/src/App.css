@@ -135,12 +135,47 @@ body {
 .error-message {
   background: #fee2e2;
   color: #dc2626;
-  padding: 16px;
-  border-radius: 8px;
+  padding: 20px;
+  border-radius: 12px;
   border-left: 4px solid #dc2626;
-  text-align: center;
-  max-width: 600px;
+  max-width: 700px;
   margin: 0 auto;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.1);
+}
+
+.error-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.error-text {
+  font-weight: 600;
+  margin-bottom: 15px;
+  text-align: center;
+}
+
+.error-help {
+  background: rgba(255, 255, 255, 0.7);
+  padding: 15px;
+  border-radius: 8px;
+  margin-top: 15px;
+  text-align: left;
+}
+
+.error-help p {
+  margin: 8px 0;
+  font-size: 0.9rem;
+}
+
+.error-help ul {
+  margin: 8px 0 8px 20px;
+  font-size: 0.9rem;
+}
+
+.error-help li {
+  margin: 4px 0;
 }
 
 /* Content Info */
