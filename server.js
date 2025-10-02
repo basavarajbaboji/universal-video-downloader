@@ -170,6 +170,56 @@ app.post('/api/download', apiLimiter, async (req, res) => {
   }
 });
 
+// Handle CORS preflight for download endpoint
+app.options('/api/download-file/:filename', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range');
+  res.status(200).end();
+});
+
+// HEAD handler for download endpoint to support range requests
+app.head('/api/download-file/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    const filePath = path.join(__dirname, 'downloads', filename);
+    
+    // Security check: ensure file is in downloads directory
+    if (!filePath.startsWith(path.join(__dirname, 'downloads'))) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    // Check if file exists
+    if (!existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    
+    const stats = require('fs').statSync(filePath);
+    const fileExtension = path.extname(filename).toLowerCase();
+    let contentType = 'application/octet-stream';
+    
+    if (fileExtension === '.mp4') {
+      contentType = 'video/mp4';
+    } else if (fileExtension === '.mp3') {
+      contentType = 'audio/mpeg';
+    } else if (fileExtension === '.webm') {
+      contentType = 'video/webm';
+    }
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', stats.size);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range');
+    res.status(200).end();
+    
+  } catch (error) {
+    console.error('HEAD request error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // File download endpoint - serves actual files for browser download
 app.get('/api/download-file/:filename', (req, res) => {
   try {
@@ -200,6 +250,10 @@ app.get('/api/download-file/:filename', (req, res) => {
     
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range');
     
     // Stream the file
     res.download(filePath, filename, (err) => {
@@ -464,12 +518,28 @@ async function downloadContent(url, format, quality, userCookies) {
         await fs.unlink(tempCookiePath).catch(() => {});
       }
       
-      // Find the downloaded file
+      // Find the downloaded file - improved logic
       const files = await fs.readdir(outputDir);
-      const downloadedFile = files.find(file => 
-        file.includes(url.split('/').pop()?.split('?')[0] || 'download') ||
-        file.includes('video') || file.includes('audio')
+      console.log('Files in downloads directory:', files);
+      
+      // Sort files by modification time (newest first)
+      const filesWithStats = await Promise.all(
+        files.map(async file => {
+          const filePath = path.join(outputDir, file);
+          const stats = await fs.stat(filePath);
+          return { file, mtime: stats.mtime };
+        })
       );
+      
+      const sortedFiles = filesWithStats
+        .sort((a, b) => b.mtime - a.mtime)
+        .map(item => item.file);
+      
+      // Find the most recently downloaded file
+      const downloadedFile = sortedFiles.find(file => {
+        const ext = path.extname(file).toLowerCase();
+        return ['.mp4', '.mp3', '.webm', '.mkv', '.avi', '.m4a', '.wav'].includes(ext);
+      }) || sortedFiles[0]; // Fallback to newest file
       
       if (downloadedFile) {
         return {

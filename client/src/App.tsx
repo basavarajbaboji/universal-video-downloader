@@ -222,35 +222,51 @@ function App() {
     const startTime = Date.now();
     
     try {
+      console.log('🔄 Starting progress tracking for:', filename);
+      console.log('📁 Download URL:', downloadUrl);
+      
       // Create abort controller for this download
       const controller = new AbortController();
       setDownloadAbortController(controller);
 
       // Check if server supports range requests for parallel downloading
+      console.log('🔍 Checking server capabilities...');
       const headResponse = await fetch(downloadUrl, { 
         method: 'HEAD',
-        signal: controller.signal 
+        signal: controller.signal,
+        mode: 'cors',
+        credentials: 'same-origin'
       });
+      
+      console.log('📊 Head response status:', headResponse.status);
+      console.log('📊 Head response headers:', Object.fromEntries(headResponse.headers.entries()));
+      
       const acceptsRanges = headResponse.headers.get('Accept-Ranges') === 'bytes';
       const contentLength = headResponse.headers.get('Content-Length');
       const total = contentLength ? parseInt(contentLength) : 0;
       
+      console.log('📏 Content length:', total, 'bytes');
+      console.log('🔄 Accepts ranges:', acceptsRanges);
+      
       setTotalBytes(total);
 
       if (speedBoostEnabled && acceptsRanges && total > 1024 * 1024) { // Only for files > 1MB
+        console.log('⚡ Using speed boost mode');
         await downloadWithSpeedBoost(downloadUrl, filename, total, startTime, controller);
       } else {
+        console.log('📥 Using sequential download');
         await downloadSequentially(downloadUrl, filename, total, startTime, controller);
       }
 
     } catch (error: any) {
       if (error.name === 'AbortError') {
-        console.log('Download cancelled by user');
+        console.log('❌ Download cancelled by user');
         return;
       }
-      console.error('Progress tracking error:', error);
+      console.error('❌ Progress tracking error:', error);
+      console.log('🔄 Falling back to simple download');
       // Fallback to simple download
-      window.open(downloadUrl, '_blank');
+      await simpleDownload(downloadUrl, filename);
     }
   };
 
@@ -393,16 +409,39 @@ function App() {
   // Simple download method for testing
   const simpleDownload = async (downloadUrl: string, filename: string) => {
     try {
-      const response = await fetch(downloadUrl);
+      console.log('📥 Starting simple download for:', filename);
+      setDownloadProgress(10);
+      
+      const response = await fetch(downloadUrl, {
+        mode: 'cors',
+        credentials: 'same-origin'
+      });
+      
       if (!response.ok) {
         throw new Error(`Download failed: ${response.statusText}`);
       }
       
+      console.log('📊 Response status:', response.status);
+      setDownloadProgress(30);
+      
+      const contentLength = response.headers.get('Content-Length');
+      const total = contentLength ? parseInt(contentLength) : 0;
+      setTotalBytes(total);
+      
+      console.log('📏 File size:', total, 'bytes');
+      setDownloadProgress(50);
+      
       const blob = await response.blob();
+      setDownloadProgress(90);
+      
+      console.log('💾 Blob created, size:', blob.size, 'bytes');
       triggerBrowserDownload(blob, filename);
-      console.log('Simple download completed:', filename);
+      
+      setDownloadProgress(100);
+      console.log('✅ Simple download completed:', filename);
     } catch (error) {
-      console.error('Simple download failed:', error);
+      console.error('❌ Simple download failed:', error);
+      console.log('🔄 Using final fallback: window.open');
       // Final fallback
       window.open(downloadUrl, '_blank');
     }
