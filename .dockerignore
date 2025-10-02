@@ -1,0 +1,14 @@
+node_modules
+client/node_modules
+client/build
+downloads
+.git
+.gitignore
+README.md
+INSTALLATION.md
+*.bat
+*.sh
+.env
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

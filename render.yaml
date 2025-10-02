@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: universal-video-downloader
+    env: node
+    plan: free
+    buildCommand: npm run render-build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NPM_CONFIG_PRODUCTION
+        value: false
+    healthCheckPath: /api/analyze

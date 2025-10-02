@@ -9,6 +9,7 @@ const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
 
 // Security middleware
 app.use(helmet({
@@ -24,7 +25,13 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // CORS and JSON parsing
-app.use(cors());
+const corsOptions = {
+  origin: NODE_ENV === 'production' 
+    ? process.env.FRONTEND_URL || true
+    : 'http://localhost:3000',
+  credentials: true
+};
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static('public'));
 
@@ -263,7 +270,12 @@ app.get('*', (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Visit http://localhost:${PORT} to use the Universal Video Downloader`);
+  console.log(`Environment: ${NODE_ENV}`);
+  if (NODE_ENV === 'development') {
+    console.log(`Visit http://localhost:${PORT} to use the Universal Video Downloader`);
+  } else {
+    console.log(`Universal Video Downloader is running in production mode`);
+  }
 });

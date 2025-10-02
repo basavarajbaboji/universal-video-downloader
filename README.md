@@ -71,6 +71,17 @@ Open http://localhost:3000 in your browser.
 **Port in use**: Change PORT in server.js
 **Frontend not loading**: Check both servers are running
 
+## Deployment
+
+### Deploy to Render.com (Free)
+1. Push code to GitHub
+2. Connect to [Render.com](https://render.com)
+3. Use build command: `npm run render-build`
+4. Use start command: `npm start`
+5. Set `NODE_ENV=production`
+
+See [DEPLOY.md](DEPLOY.md) for detailed instructions.
+
 ## Legal Notice
 
 For educational and personal use only. Respect copyright laws and website terms of service.
