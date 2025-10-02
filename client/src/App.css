@@ -800,3 +800,228 @@ body {
     gap: 5px;
   }
 }
+
+/* Speed Boost Styles */
+.speed-boost-section {
+  margin-top: 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.speed-boost-toggle {
+  width: 100%;
+  background: #f8fafc;
+  border: none;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #374151;
+  transition: all 0.3s ease;
+}
+
+.speed-boost-toggle:hover {
+  background: #f1f5f9;
+}
+
+.boost-icon {
+  width: 18px;
+  height: 18px;
+  color: #f59e0b;
+}
+
+.boost-icon-small {
+  width: 14px;
+  height: 14px;
+  color: #f59e0b;
+}
+
+.speed-settings {
+  padding: 16px;
+  background: white;
+  border-top: 1px solid #e5e7eb;
+}
+
+.speed-setting {
+  margin-bottom: 16px;
+}
+
+.speed-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 5px;
+  cursor: pointer;
+}
+
+.speed-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #f59e0b;
+}
+
+.speed-description {
+  display: block;
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+.speed-slider {
+  width: 100%;
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  outline: none;
+  margin: 8px 0;
+  accent-color: #f59e0b;
+}
+
+.speed-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  background: #f59e0b;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.speed-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  background: #f59e0b;
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.speed-info {
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 10px;
+  margin-top: 12px;
+}
+
+.boost-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.boost-badge {
+  background: #f59e0b;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 8px;
+}
+
+.progress-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cancel-download-btn {
+  background: #ef4444;
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  width: 100%;
+  justify-content: center;
+}
+
+.cancel-download-btn:hover {
+  background: #dc2626;
+  transform: translateY(-1px);
+}
+
+.cancel-icon {
+  width: 16px;
+  height: 16px;
+}
+
+/* Enhanced progress bar for speed boost */
+.download-progress-container.speed-boost {
+  border: 2px solid #f59e0b;
+}
+
+.progress-fill.speed-boost {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+}
+
+.progress-fill.speed-boost::after {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.6),
+    transparent
+  );
+  animation: shimmer-fast 1s infinite;
+}
+
+@keyframes shimmer-fast {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Responsive Speed Settings */
+@media (max-width: 768px) {
+  .speed-boost-toggle {
+    font-size: 14px;
+    padding: 10px 12px;
+  }
+  
+  .speed-settings {
+    padding: 12px;
+  }
+}
+
+/* Loading Spinner */
+.loading-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top: 2px solid white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-right: 8px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Enhanced Analyze Button */
+.analyze-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.analyze-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}

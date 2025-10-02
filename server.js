@@ -8,7 +8,6 @@ const axios = require('axios');
 const { existsSync } = require('fs');
 const ytdlp = require('yt-dlp-exec');
 
-const app = express();
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
@@ -16,12 +15,29 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const COOKIES_PATH = process.env.COOKIES_PATH || path.join(__dirname, 'cookies.txt');
 const USE_COOKIES = existsSync(COOKIES_PATH);
 
+// URL analysis cache to speed up repeated requests
+const analysisCache = new Map();
+const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
+
+// Clean up expired cache entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of analysisCache.entries()) {
+    if (now - value.timestamp > CACHE_DURATION) {
+      analysisCache.delete(key);
+    }
+  }
+  console.log(`Cache cleanup: ${analysisCache.size} entries remaining`);
+}, 5 * 60 * 1000);
+
 if (USE_COOKIES) {
-  console.log('✅ YouTube cookies found - 429 errors should be reduced');
+  console.log('✓ Cookies file found - YouTube 429 errors should be reduced');
 } else {
-  console.log('⚠️  No cookies.txt found - YouTube may return 429 errors');
-  console.log('   Create cookies.txt from cookies.txt.example to fix this');
+  console.log('⚠ No cookies file found - may encounter YouTube 429 errors');
+  console.log('  Create cookies.txt or set COOKIES_PATH environment variable');
 }
+
+const app = express();
 
 // Security middleware
 app.use(helmet({
@@ -75,25 +91,53 @@ app.post('/api/analyze', apiLimiter, async (req, res) => {
       return res.status(400).json({ error: 'URL is required' });
     }
 
+    // Create cache key
+    const cacheKey = `${url}_${cookies ? 'with_cookies' : 'no_cookies'}`;
+    
+    // Check cache first
+    const cached = analysisCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION) {
+      console.log('✓ Returning cached analysis for:', url.substring(0, 50) + '...');
+      return res.json(cached.data);
+    }
+
     // Check if it's a direct file URL
     const fileExtension = getFileExtension(url);
     if (fileExtension) {
-      return res.json({
+      const result = {
         type: 'file',
         url: url,
         extension: fileExtension,
         filename: getFilenameFromUrl(url),
         fileSize: await getFileSize(url)
+      };
+      
+      // Cache file analysis
+      analysisCache.set(cacheKey, {
+        data: result,
+        timestamp: Date.now()
       });
+      
+      return res.json(result);
     }
 
+    console.log('⚡ Fast analyzing video URL:', url.substring(0, 50) + '...');
+    
     // Use yt-dlp to analyze video URL
     const videoInfo = await analyzeVideoUrl(url, cookies);
     
-    res.json({
+    const result = {
       type: 'video',
       ...videoInfo
+    };
+    
+    // Cache video analysis
+    analysisCache.set(cacheKey, {
+      data: result,
+      timestamp: Date.now()
     });
+    
+    res.json(result);
 
   } catch (error) {
     console.error('Analysis error:', error);
@@ -235,21 +279,23 @@ async function analyzeVideoUrl(url, userCookies) {
     const options = {
       dumpSingleJson: true,
       noWarnings: true,
+      skipDownload: true,
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       referer: 'https://www.google.com/',
       addHeader: [
         'Accept-Language:en-US,en;q=0.9',
         'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Encoding:gzip, deflate',
         'DNT:1',
-        'Connection:keep-alive',
-        'Upgrade-Insecure-Requests:1'
+        'Connection:keep-alive'
       ],
-      sleepInterval: 2,
-      maxSleepInterval: 8,
-      extractorRetries: 5,
-      fragmentRetries: 5,
-      retrySleep: 'exp=1:10'
+      sleepInterval: 0,
+      maxSleepInterval: 1,
+      extractorRetries: 1,
+      fragmentRetries: 1,
+      socketTimeout: 10,
+      // Speed optimization flags
+      noPlaylist: true,
+      playlistEnd: 1
     };
 
     // Priority: user-provided cookies > file cookies > no cookies

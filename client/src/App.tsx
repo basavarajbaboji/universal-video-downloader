@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Download, Link, Play, FileText, Settings, Cookie, History, X } from 'lucide-react';
+import { Download, Link, Play, FileText, Settings, Cookie, History, X, Zap, ChevronDown, ChevronUp } from 'lucide-react';
 import './App.css';
 
 interface VideoInfo {
@@ -74,6 +74,12 @@ function App() {
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
   const [currentDownloadFilename, setCurrentDownloadFilename] = useState('');
+  const [speedBoostEnabled, setSpeedBoostEnabled] = useState(true);
+  const [parallelConnections, setParallelConnections] = useState(4);
+  const [maxSpeed, setMaxSpeed] = useState(0); // 0 = unlimited
+  const [showSpeedSettings, setShowSpeedSettings] = useState(false);
+  const [downloadAbortController, setDownloadAbortController] = useState<AbortController | null>(null);
+  const [useSimpleDownload, setUseSimpleDownload] = useState(false);
 
   useEffect(() => {
     // Show cookie popup after 2 seconds
@@ -133,6 +139,15 @@ function App() {
     setDownloadedBytes(0);
     setTotalBytes(0);
     setCurrentDownloadFilename('');
+    setDownloadAbortController(null);
+  };
+
+  const cancelDownload = () => {
+    if (downloadAbortController) {
+      downloadAbortController.abort();
+    }
+    setDownloading(false);
+    resetProgressState();
   };
 
   const handleDownload = async () => {
@@ -159,8 +174,20 @@ function App() {
         const filename = response.data.filename || 'download';
         setCurrentDownloadFilename(filename);
 
-        // Start progress tracking by fetching the file with progress monitoring
-        await trackDownloadProgress(response.data.downloadUrl, filename);
+        // Choose download method based on settings
+        if (useSimpleDownload) {
+          console.log('Using simple download method');
+          await simpleDownload(response.data.downloadUrl, filename);
+        } else {
+          // Start progress tracking by fetching the file with progress monitoring
+          try {
+            await trackDownloadProgress(response.data.downloadUrl, filename);
+          } catch (error) {
+            console.error('Progress tracking failed, using simple download:', error);
+            // Fallback to simple download
+            await simpleDownload(response.data.downloadUrl, filename);
+          }
+        }
 
         // Add to download history
         const downloadRecord: DownloadRecord = {
@@ -180,6 +207,7 @@ function App() {
         
         alert(`Download completed: ${filename}`);
       } else {
+        console.log('Download response:', response.data);
         alert(response.data.message || 'Download completed successfully!');
       }
     } catch (err: any) {
@@ -194,63 +222,188 @@ function App() {
     const startTime = Date.now();
     
     try {
-      const response = await fetch(downloadUrl);
-      
-      if (!response.ok) {
-        throw new Error(`Download failed: ${response.statusText}`);
-      }
+      // Create abort controller for this download
+      const controller = new AbortController();
+      setDownloadAbortController(controller);
 
-      const contentLength = response.headers.get('Content-Length');
+      // Check if server supports range requests for parallel downloading
+      const headResponse = await fetch(downloadUrl, { 
+        method: 'HEAD',
+        signal: controller.signal 
+      });
+      const acceptsRanges = headResponse.headers.get('Accept-Ranges') === 'bytes';
+      const contentLength = headResponse.headers.get('Content-Length');
       const total = contentLength ? parseInt(contentLength) : 0;
+      
       setTotalBytes(total);
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Failed to get response stream');
+      if (speedBoostEnabled && acceptsRanges && total > 1024 * 1024) { // Only for files > 1MB
+        await downloadWithSpeedBoost(downloadUrl, filename, total, startTime, controller);
+      } else {
+        await downloadSequentially(downloadUrl, filename, total, startTime, controller);
       }
 
-      const chunks: Uint8Array[] = [];
-      let downloaded = 0;
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        console.log('Download cancelled by user');
+        return;
+      }
+      console.error('Progress tracking error:', error);
+      // Fallback to simple download
+      window.open(downloadUrl, '_blank');
+    }
+  };
+
+  const downloadWithSpeedBoost = async (downloadUrl: string, filename: string, total: number, startTime: number, controller: AbortController) => {
+    const chunkSize = Math.ceil(total / parallelConnections);
+    const chunks: (Uint8Array | null)[] = new Array(parallelConnections).fill(null);
+    let totalDownloaded = 0;
+
+    // Create parallel download promises
+    const downloadPromises = Array.from({ length: parallelConnections }, async (_, index) => {
+      const start = index * chunkSize;
+      const end = Math.min(start + chunkSize - 1, total - 1);
+      
+      if (start >= total) return;
+
+      const response = await fetch(downloadUrl, {
+        headers: {
+          'Range': `bytes=${start}-${end}`,
+          'Connection': 'keep-alive',
+          'Cache-Control': 'no-cache'
+        },
+        signal: controller.signal
+      });
+
+      if (!response.ok) {
+        throw new Error(`Chunk ${index} failed: ${response.statusText}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error(`Failed to get reader for chunk ${index}`);
+
+      const chunkData: Uint8Array[] = [];
+      let chunkDownloaded = 0;
 
       while (true) {
         const { done, value } = await reader.read();
-        
         if (done) break;
+
+        chunkData.push(value);
+        chunkDownloaded += value.length;
         
-        chunks.push(value);
-        downloaded += value.length;
-        setDownloadedBytes(downloaded);
+        // Update total progress
+        totalDownloaded += value.length;
+        setDownloadedBytes(totalDownloaded);
 
-        // Calculate progress percentage
-        if (total > 0) {
-          const progress = (downloaded / total) * 100;
-          setDownloadProgress(Math.round(progress));
-        }
+        // Calculate progress and speed
+        const progress = (totalDownloaded / total) * 100;
+        setDownloadProgress(Math.round(progress));
 
-        // Calculate download speed (bytes per second)
         const elapsed = (Date.now() - startTime) / 1000;
         if (elapsed > 0) {
-          const speed = downloaded / elapsed;
+          const speed = totalDownloaded / elapsed;
           setDownloadSpeed(speed);
         }
       }
 
-      // Create blob and trigger download
-      const blob = new Blob(chunks);
-      const url = URL.createObjectURL(blob);
+      // Combine chunk data
+      const totalChunkSize = chunkData.reduce((sum, chunk) => sum + chunk.length, 0);
+      const combinedChunk = new Uint8Array(totalChunkSize);
+      let offset = 0;
       
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      for (const chunk of chunkData) {
+        combinedChunk.set(chunk, offset);
+        offset += chunk.length;
+      }
       
-      URL.revokeObjectURL(url);
+      chunks[index] = combinedChunk;
+    });
 
+    // Wait for all chunks to complete
+    await Promise.all(downloadPromises);
+
+    // Combine all chunks in order
+    const validChunks = chunks.filter((chunk): chunk is Uint8Array => chunk !== null);
+    const blob = new Blob(validChunks);
+    triggerBrowserDownload(blob, filename);
+  };
+
+  const downloadSequentially = async (downloadUrl: string, filename: string, total: number, startTime: number, controller: AbortController) => {
+    const response = await fetch(downloadUrl, {
+      headers: {
+        'Connection': 'keep-alive',
+        'Cache-Control': 'no-cache'
+      },
+      signal: controller.signal
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Download failed: ${response.statusText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('Failed to get response stream');
+    }
+
+    const chunks: Uint8Array[] = [];
+    let downloaded = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      
+      if (done) break;
+      
+      chunks.push(value);
+      downloaded += value.length;
+      setDownloadedBytes(downloaded);
+
+      // Calculate progress percentage
+      if (total > 0) {
+        const progress = (downloaded / total) * 100;
+        setDownloadProgress(Math.round(progress));
+      }
+
+      // Calculate download speed (bytes per second)
+      const elapsed = (Date.now() - startTime) / 1000;
+      if (elapsed > 0) {
+        const speed = downloaded / elapsed;
+        setDownloadSpeed(speed);
+      }
+    }
+
+    const blob = new Blob(chunks);
+    triggerBrowserDownload(blob, filename);
+  };
+
+  const triggerBrowserDownload = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    URL.revokeObjectURL(url);
+  };
+
+  // Simple download method for testing
+  const simpleDownload = async (downloadUrl: string, filename: string) => {
+    try {
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.statusText}`);
+      }
+      
+      const blob = await response.blob();
+      triggerBrowserDownload(blob, filename);
+      console.log('Simple download completed:', filename);
     } catch (error) {
-      console.error('Progress tracking error:', error);
-      // Fallback to simple download
+      console.error('Simple download failed:', error);
+      // Final fallback
       window.open(downloadUrl, '_blank');
     }
   };
@@ -341,7 +494,12 @@ function App() {
                 disabled={loading}
                 className="analyze-btn"
               >
-                {loading ? 'Analyzing...' : 'Analyze'}
+                {loading ? (
+                  <>
+                    <div className="loading-spinner"></div>
+                    Analyzing...
+                  </>
+                ) : 'Analyze'}
               </button>
             </div>
           </div>
@@ -438,6 +596,85 @@ function App() {
                         </select>
                       </div>
                     )}
+
+                    {/* Speed Boost Settings */}
+                    <div className="speed-boost-section">
+                      <button 
+                        className="speed-boost-toggle"
+                        onClick={() => setShowSpeedSettings(!showSpeedSettings)}
+                      >
+                        <Zap className="boost-icon" />
+                        <span>Speed Boost Settings</span>
+                        {showSpeedSettings ? <ChevronUp /> : <ChevronDown />}
+                      </button>
+                      
+                      {showSpeedSettings && (
+                        <div className="speed-settings">
+                          <div className="speed-setting">
+                            <label className="speed-label">
+                              <input
+                                type="checkbox"
+                                checked={speedBoostEnabled}
+                                onChange={(e) => setSpeedBoostEnabled(e.target.checked)}
+                              />
+                              Enable Speed Boost (Parallel Downloads)
+                            </label>
+                            <span className="speed-description">
+                              Downloads files in multiple parallel chunks for faster speeds
+                            </span>
+                          </div>
+                          
+                          {speedBoostEnabled && (
+                            <>
+                              <div className="speed-setting">
+                                <label className="speed-label">
+                                  Parallel Connections: {parallelConnections}
+                                </label>
+                                <input
+                                  type="range"
+                                  min="1"
+                                  max="8"
+                                  value={parallelConnections}
+                                  onChange={(e) => setParallelConnections(parseInt(e.target.value))}
+                                  className="speed-slider"
+                                />
+                                <span className="speed-description">
+                                  More connections = faster downloads (1-8 connections)
+                                </span>
+                              </div>
+                            </>
+                          )}
+                          
+                          <div className="speed-setting">
+                            <label className="speed-label">
+                              <input
+                                type="checkbox"
+                                checked={useSimpleDownload}
+                                onChange={(e) => setUseSimpleDownload(e.target.checked)}
+                              />
+                              Use Simple Download (Testing Mode)
+                            </label>
+                            <span className="speed-description">
+                              Skip progress tracking and use basic download method
+                            </span>
+                          </div>
+
+                          <div className="speed-info">
+                            <div className="boost-indicator">
+                              <Zap className="boost-icon-small" />
+                              <span>
+                                {useSimpleDownload 
+                                  ? 'Simple Mode: Basic download'
+                                  : speedBoostEnabled 
+                                    ? `Boost Mode: ${parallelConnections}x connections` 
+                                    : 'Standard Mode: Single connection'
+                                }
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -463,7 +700,11 @@ function App() {
                 <div className="download-progress-container">
                   <div className="progress-info">
                     <div className="progress-text">
-                      <span className="progress-label">Downloading: {currentDownloadFilename}</span>
+                      <span className="progress-label">
+                        {speedBoostEnabled && <Zap className="boost-icon-small" />}
+                        Downloading: {currentDownloadFilename}
+                        {speedBoostEnabled && <span className="boost-badge">{parallelConnections}x</span>}
+                      </span>
                       <span className="progress-percentage">{downloadProgress}%</span>
                     </div>
                     <div className="progress-details">
@@ -477,10 +718,17 @@ function App() {
                   </div>
                   <div className="progress-bar">
                     <div 
-                      className="progress-fill" 
+                      className={`progress-fill ${speedBoostEnabled ? 'speed-boost' : ''}`}
                       style={{ width: `${downloadProgress}%` }}
                     ></div>
                   </div>
+                  <button
+                    onClick={cancelDownload}
+                    className="cancel-download-btn"
+                  >
+                    <X className="cancel-icon" />
+                    Cancel Download
+                  </button>
                 </div>
               ) : (
                 <button
