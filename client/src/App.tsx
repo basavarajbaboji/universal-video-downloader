@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Download, Link, Play, FileText, Settings, Cookie } from 'lucide-react';
+import { Download, Link, Play, FileText, Settings, Cookie, History, X } from 'lucide-react';
 import './App.css';
 
 interface VideoInfo {
@@ -43,6 +43,19 @@ interface AudioFormat {
   acodec: string;
 }
 
+interface DownloadRecord {
+  id: string;
+  title: string;
+  url: string;
+  format: string;
+  quality: string;
+  filename: string;
+  downloadUrl: string;
+  timestamp: number;
+  status: 'completed' | 'failed';
+  fileSize?: number;
+}
+
 type ContentInfo = VideoInfo | FileInfo;
 
 function App() {
@@ -54,14 +67,13 @@ function App() {
   const [selectedQuality, setSelectedQuality] = useState('');
   const [downloading, setDownloading] = useState(false);
   const [showCookiePopup, setShowCookiePopup] = useState(false);
+  const [downloadHistory, setDownloadHistory] = useState<DownloadRecord[]>([]);
+  const [showDownloadHistory, setShowDownloadHistory] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
-  const [downloadSize, setDownloadSize] = useState(0);
-  const [abortController, setAbortController] = useState<AbortController | null>(null);
-  const [isPaused, setIsPaused] = useState(false);
-  const [downloadedChunks, setDownloadedChunks] = useState<Uint8Array[]>([]);
+  const [downloadSpeed, setDownloadSpeed] = useState(0);
   const [downloadedBytes, setDownloadedBytes] = useState(0);
-  const [currentFilename, setCurrentFilename] = useState('');
-  const [retryCount, setRetryCount] = useState(0);
+  const [totalBytes, setTotalBytes] = useState(0);
+  const [currentDownloadFilename, setCurrentDownloadFilename] = useState('');
 
   useEffect(() => {
     // Show cookie popup after 2 seconds
@@ -69,8 +81,23 @@ function App() {
       setShowCookiePopup(true);
     }, 2000);
 
+    // Load download history from localStorage
+    const savedHistory = localStorage.getItem('downloadHistory');
+    if (savedHistory) {
+      try {
+        setDownloadHistory(JSON.parse(savedHistory));
+      } catch (error) {
+        console.error('Failed to load download history:', error);
+      }
+    }
+
     return () => clearTimeout(timer);
   }, []);
+
+  // Save download history to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem('downloadHistory', JSON.stringify(downloadHistory));
+  }, [downloadHistory]);
 
   const handleAnalyze = async () => {
     if (!url.trim()) {
@@ -100,153 +127,131 @@ function App() {
     }
   };
 
-  const startDownload = async (resumeFromByte = 0) => {
+  const resetProgressState = () => {
+    setDownloadProgress(0);
+    setDownloadSpeed(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setCurrentDownloadFilename('');
+  };
+
+  const handleDownload = async () => {
     if (!contentInfo) return;
 
+    setDownloading(true);
+    setError('');
+    resetProgressState();
+
     try {
-      const controller = new AbortController();
-      setAbortController(controller);
-
-      const downloadUrl = contentInfo.type === 'video' ? contentInfo.webpage_url : contentInfo.url;
-      const streamUrl = `/api/stream-download?${new URLSearchParams({
-        url: downloadUrl,
+      // First, initiate the download on the server
+      const response = await axios.post<{
+        success: boolean;
+        message?: string;
+        filename?: string;
+        downloadUrl?: string;
+      }>('/api/download', {
+        url: contentInfo.type === 'video' ? contentInfo.webpage_url : contentInfo.url,
         format: selectedFormat,
-        quality: selectedQuality,
-        resumeFrom: resumeFromByte.toString()
-      })}`;
-
-      const headers: HeadersInit = {};
-      if (resumeFromByte > 0) {
-        headers['Range'] = `bytes=${resumeFromByte}-`;
-      }
-
-      const response = await fetch(streamUrl, {
-        signal: controller.signal,
-        headers
+        quality: selectedQuality
       });
 
+      if (response.data.success && response.data.downloadUrl) {
+        const filename = response.data.filename || 'download';
+        setCurrentDownloadFilename(filename);
+
+        // Start progress tracking by fetching the file with progress monitoring
+        await trackDownloadProgress(response.data.downloadUrl, filename);
+
+        // Add to download history
+        const downloadRecord: DownloadRecord = {
+          id: Date.now().toString(),
+          title: contentInfo.type === 'video' ? contentInfo.title : contentInfo.filename,
+          url: contentInfo.type === 'video' ? contentInfo.webpage_url : contentInfo.url,
+          format: selectedFormat,
+          quality: selectedQuality,
+          filename: filename,
+          downloadUrl: response.data.downloadUrl,
+          timestamp: Date.now(),
+          status: 'completed',
+          fileSize: totalBytes || (contentInfo.type === 'file' ? contentInfo.fileSize || undefined : undefined)
+        };
+        
+        setDownloadHistory(prev => [downloadRecord, ...prev]);
+        
+        alert(`Download completed: ${filename}`);
+      } else {
+        alert(response.data.message || 'Download completed successfully!');
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Failed to start download');
+    } finally {
+      setDownloading(false);
+      resetProgressState();
+    }
+  };
+
+  const trackDownloadProgress = async (downloadUrl: string, filename: string) => {
+    const startTime = Date.now();
+    
+    try {
+      const response = await fetch(downloadUrl);
+      
       if (!response.ok) {
         throw new Error(`Download failed: ${response.statusText}`);
       }
 
-      // Get filename and size info
-      const contentDisposition = response.headers.get('Content-Disposition');
-      const filenameMatch = contentDisposition?.match(/filename="([^"]+)"/);
-      const filename = filenameMatch?.[1] || `download.${selectedFormat}`;
-      setCurrentFilename(filename);
-
       const contentLength = response.headers.get('Content-Length');
-      const totalSize = contentLength ? parseInt(contentLength) + resumeFromByte : 0;
-
-      if (totalSize > 0 && downloadSize === 0) {
-        setDownloadSize(totalSize);
-      }
+      const total = contentLength ? parseInt(contentLength) : 0;
+      setTotalBytes(total);
 
       const reader = response.body?.getReader();
       if (!reader) {
         throw new Error('Failed to get response stream');
       }
 
-      // Resume download loop
-      while (!isPaused) {
+      const chunks: Uint8Array[] = [];
+      let downloaded = 0;
+
+      while (true) {
         const { done, value } = await reader.read();
         
         if (done) break;
         
-        // Add chunk to existing chunks
-        setDownloadedChunks(prev => [...prev, value]);
-        const newDownloadedBytes = downloadedBytes + value.length;
-        setDownloadedBytes(newDownloadedBytes);
-        
-        // Update progress
-        if (downloadSize > 0) {
-          const progress = (newDownloadedBytes / downloadSize) * 100;
+        chunks.push(value);
+        downloaded += value.length;
+        setDownloadedBytes(downloaded);
+
+        // Calculate progress percentage
+        if (total > 0) {
+          const progress = (downloaded / total) * 100;
           setDownloadProgress(Math.round(progress));
         }
 
-        // Check if paused during download
-        if (isPaused) {
-          reader.cancel();
-          break;
+        // Calculate download speed (bytes per second)
+        const elapsed = (Date.now() - startTime) / 1000;
+        if (elapsed > 0) {
+          const speed = downloaded / elapsed;
+          setDownloadSpeed(speed);
         }
       }
 
-      // If completed (not paused), trigger download
-      if (!isPaused && downloadedChunks.length > 0) {
-        const blob = new Blob(downloadedChunks);
-        const url = URL.createObjectURL(blob);
-        
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        URL.revokeObjectURL(url);
-        
-        // Reset state
-        resetDownloadState();
-        alert(`Download completed: ${filename}`);
-      }
+      // Create blob and trigger download
+      const blob = new Blob(chunks);
+      const url = URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      URL.revokeObjectURL(url);
 
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        console.log('Download stream aborted');
-      } else if (err.message.includes('network') || err.message.includes('fetch')) {
-        // Network error - attempt retry
-        if (retryCount < 3) {
-          console.log(`Network error, retrying... (${retryCount + 1}/3)`);
-          setRetryCount(prev => prev + 1);
-          setTimeout(() => startDownload(downloadedBytes), 2000);
-          return;
-        } else {
-          setError('Network error: Maximum retries exceeded. You can resume the download.');
-        }
-      } else {
-        setError(err.message || 'Failed to download');
-      }
-    }
-  };
-
-  const handleDownload = async () => {
-    if (!contentInfo) return;
-
-    // Reset state for new download
-    resetDownloadState();
-    setDownloading(true);
-    setError('');
-    
-    await startDownload(0);
-  };
-
-  const handlePauseResume = () => {
-    if (isPaused) {
-      // Resume download
-      setIsPaused(false);
-      startDownload(downloadedBytes);
-    } else {
-      // Pause download
-      setIsPaused(true);
-      if (abortController) {
-        abortController.abort();
-      }
-    }
-  };
-
-  const resetDownloadState = () => {
-    setDownloadProgress(0);
-    setDownloadSize(0);
-    setDownloadedChunks([]);
-    setDownloadedBytes(0);
-    setCurrentFilename('');
-    setRetryCount(0);
-    setIsPaused(false);
-  };
-
-  const handleCancelDownload = () => {
-    if (abortController) {
-      abortController.abort();
+    } catch (error) {
+      console.error('Progress tracking error:', error);
+      // Fallback to simple download
+      window.open(downloadUrl, '_blank');
     }
   };
 
@@ -266,6 +271,12 @@ function App() {
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(1024));
     return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+  };
+
+  const formatSpeed = (bytesPerSecond: number) => {
+    const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(1024));
+    return Math.round(bytesPerSecond / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
   };
 
   return (
@@ -304,6 +315,13 @@ function App() {
             <h1>Universal Video Downloader</h1>
           </div>
           <p className="subtitle">Download videos and files from 1000+ websites</p>
+          <button 
+            className="history-btn"
+            onClick={() => setShowDownloadHistory(!showDownloadHistory)}
+          >
+            <History className="history-icon" />
+            Downloads ({downloadHistory.length})
+          </button>
         </header>
 
         <div className="main-content">
@@ -442,17 +460,20 @@ function App() {
               )}
 
               {downloading ? (
-                <div className="download-progress">
+                <div className="download-progress-container">
                   <div className="progress-info">
-                    <span className="progress-text">
-                      {isPaused ? 'Paused' : 'Downloading...'} {downloadProgress > 0 ? `${downloadProgress}%` : ''}
-                      {retryCount > 0 && ` (Retry ${retryCount}/3)`}
-                    </span>
-                    {downloadSize > 0 && (
-                      <span className="download-size">
-                        {formatFileSize(downloadedBytes)} / {formatFileSize(downloadSize)}
+                    <div className="progress-text">
+                      <span className="progress-label">Downloading: {currentDownloadFilename}</span>
+                      <span className="progress-percentage">{downloadProgress}%</span>
+                    </div>
+                    <div className="progress-details">
+                      <span className="progress-size">
+                        {formatFileSize(downloadedBytes)} / {totalBytes > 0 ? formatFileSize(totalBytes) : 'Unknown'}
                       </span>
-                    )}
+                      {downloadSpeed > 0 && (
+                        <span className="progress-speed">{formatSpeed(downloadSpeed)}</span>
+                      )}
+                    </div>
                   </div>
                   <div className="progress-bar">
                     <div 
@@ -460,29 +481,6 @@ function App() {
                       style={{ width: `${downloadProgress}%` }}
                     ></div>
                   </div>
-                  <div className="download-controls">
-                    <button
-                      onClick={handlePauseResume}
-                      className={`control-btn ${isPaused ? 'resume-btn' : 'pause-btn'}`}
-                    >
-                      {isPaused ? '▶️ Resume' : '⏸️ Pause'}
-                    </button>
-                    <button
-                      onClick={() => {
-                        handleCancelDownload();
-                        setDownloading(false);
-                        resetDownloadState();
-                      }}
-                      className="cancel-btn"
-                    >
-                      ❌ Cancel
-                    </button>
-                  </div>
-                  {currentFilename && (
-                    <div className="download-filename">
-                      📁 {currentFilename}
-                    </div>
-                  )}
                 </div>
               ) : (
                 <button
@@ -491,12 +489,77 @@ function App() {
                   className="download-btn"
                 >
                   <Download className="btn-icon" />
-                  Stream Download
+                  Download
                 </button>
               )}
             </div>
           )}
         </div>
+
+        {/* Download History Panel */}
+        {showDownloadHistory && (
+          <div className="download-history-panel">
+            <div className="history-header">
+              <h2>Download History</h2>
+              <button 
+                className="close-history-btn"
+                onClick={() => setShowDownloadHistory(false)}
+              >
+                <X className="close-icon" />
+              </button>
+            </div>
+            
+            {downloadHistory.length === 0 ? (
+              <div className="no-downloads">
+                <p>No downloads yet. Start downloading videos to see them here!</p>
+              </div>
+            ) : (
+              <div className="history-list">
+                {downloadHistory.map((record) => (
+                  <div key={record.id} className="history-item">
+                    <div className="history-info">
+                      <h3 className="history-title">{record.title}</h3>
+                      <div className="history-meta">
+                        <span className="history-format">{record.format.toUpperCase()}</span>
+                        {record.quality && <span className="history-quality">{record.quality}p</span>}
+                        {record.fileSize && (
+                          <span className="history-size">{formatFileSize(record.fileSize)}</span>
+                        )}
+                        <span className="history-date">
+                          {new Date(record.timestamp).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <div className="history-url">{record.url}</div>
+                    </div>
+                    <div className="history-actions">
+                      <button
+                        className="redownload-btn"
+                        onClick={() => window.open(record.downloadUrl, '_blank')}
+                      >
+                        <Download className="download-icon" />
+                        Re-download
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {downloadHistory.length > 0 && (
+              <div className="history-footer">
+                <button
+                  className="clear-history-btn"
+                  onClick={() => {
+                    setDownloadHistory([]);
+                    localStorage.removeItem('downloadHistory');
+                  }}
+                >
+                  Clear All History
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         <footer className="footer">
           <p>Supports YouTube, Vimeo, Facebook, Instagram, TikTok, and 1000+ more websites</p>
