@@ -1,0 +1,31 @@
+# YouTube Cookies File
+# 
+# To fix YouTube 429 "Too Many Requests" errors, you need to export your browser cookies
+# and save them as 'cookies.txt' in this directory.
+#
+# HOW TO EXPORT COOKIES:
+#
+# Method 1: Using Browser Extension (Recommended)
+# 1. Install "Get cookies.txt LOCALLY" extension for Chrome/Firefox
+# 2. Go to youtube.com and make sure you're logged in
+# 3. Click the extension icon and download cookies.txt
+# 4. Rename this file from 'cookies.txt.example' to 'cookies.txt'
+# 5. Replace this content with your exported cookies
+#
+# Method 2: Manual Export (Advanced)
+# 1. Open Developer Tools (F12) on youtube.com
+# 2. Go to Application/Storage tab > Cookies > https://www.youtube.com
+# 3. Copy all cookie data in Netscape format
+# 4. Save as cookies.txt in this directory
+#
+# SECURITY NOTE:
+# - Never commit cookies.txt to version control
+# - cookies.txt is already in .gitignore
+# - For production deployment, use Render Secrets or environment variables
+#
+# COOKIE FORMAT EXAMPLE:
+# .youtube.com	TRUE	/	FALSE	1234567890	cookie_name	cookie_value
+#
+# After adding your cookies, the 429 errors should be resolved!
+
+# This is a placeholder file. Replace with your actual YouTube cookies.

@@ -6,10 +6,22 @@ const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs').promises;
 const axios = require('axios');
+const { existsSync } = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
+
+// Cookie configuration
+const COOKIES_PATH = process.env.COOKIES_PATH || path.join(__dirname, 'cookies.txt');
+const USE_COOKIES = existsSync(COOKIES_PATH);
+
+if (USE_COOKIES) {
+  console.log('✅ YouTube cookies found - 429 errors should be reduced');
+} else {
+  console.log('⚠️  No cookies.txt found - YouTube may return 429 errors');
+  console.log('   Create cookies.txt from cookies.txt.example to fix this');
+}
 
 // Security middleware
 app.use(helmet({
@@ -154,13 +166,20 @@ async function analyzeVideoUrl(url) {
       '--add-header', 'DNT:1',
       '--add-header', 'Connection:keep-alive',
       '--add-header', 'Upgrade-Insecure-Requests:1',
-      '--sleep-interval', '1',
-      '--max-sleep-interval', '5',
-      '--extractor-retries', '3',
-      '--fragment-retries', '3',
-      '--retry-sleep', 'linear=1::2',
-      url
+      '--sleep-interval', '2',
+      '--max-sleep-interval', '8',
+      '--extractor-retries', '5',
+      '--fragment-retries', '5',
+      '--retry-sleep', 'exp=1:10'
     ];
+
+    // Add cookies if available (critical for avoiding 429 errors)
+    if (USE_COOKIES) {
+      args.push('--cookies', COOKIES_PATH);
+    }
+
+    // Add URL as the last argument
+    args.push(url);
 
     const ytdlp = spawn('yt-dlp', args);
 
@@ -266,14 +285,18 @@ async function downloadContent(url, format, quality) {
       '--add-header', 'DNT:1',
       '--add-header', 'Connection:keep-alive',
       '--add-header', 'Upgrade-Insecure-Requests:1',
-      '--sleep-interval', '2',
-      '--max-sleep-interval', '8',
+      '--sleep-interval', '3',
+      '--max-sleep-interval', '10',
       '--extractor-retries', '5',
       '--fragment-retries', '5',
       '--retry-sleep', 'exp=1:20',
-      '--throttled-rate', '100K',
-      url
+      '--throttled-rate', '100K'
     ];
+
+    // Add cookies if available (critical for avoiding 429 errors)
+    if (USE_COOKIES) {
+      args.push('--cookies', COOKIES_PATH);
+    }
 
     if (format === 'mp3') {
       args.push('--extract-audio', '--audio-format', 'mp3');
@@ -283,6 +306,9 @@ async function downloadContent(url, format, quality) {
     } else if (format === 'mp4') {
       args.push('--format', `best[height<=${quality}][ext=mp4]`);
     }
+
+    // Add URL as the last argument
+    args.push(url);
 
     const ytdlp = spawn('yt-dlp', args);
 
